@@ -1,0 +1,3 @@
+# contract-term-extraction.txt
+
+TODO: Add prompt/template content.

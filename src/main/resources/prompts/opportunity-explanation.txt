@@ -1,0 +1,3 @@
+# opportunity-explanation.txt
+
+TODO: Add prompt/template content.
