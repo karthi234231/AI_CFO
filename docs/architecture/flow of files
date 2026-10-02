@@ -1,0 +1,641 @@
+<!-- The build order: the vertical slices in the order they are meant to be
+     developed. It exists so that parallel work on separate modules does not collide
+     and so that each slice lands on a compiling, runnable base. It is a sequencing
+     aid, not a rule - the rules are module-implementation-rules.md, and the scope
+     committed to today is phase-0-scope.md. File paths below are illustrative
+     targets; where a path has drifted, trust the code over this list. -->
+
+Now that the repository architecture is in place, develop **Phase 0 in vertical slices**, not folder-by-folder. The order below keeps every implementation aligned with the final Enterprise Financial & Profit Intelligence Infrastructure.
+
+### 1. Application foundation
+
+Develop first:
+
+```text
+CfoApplication.java
+
+platform/config/
+├── ApplicationProperties.java
+├── JacksonConfig.java
+├── TransactionConfig.java
+├── AsyncConfig.java
+└── OpenApiConfig.java
+
+
+platform/web/
+├── GlobalExceptionHandler.java
+├── ApiErrorResponse.java
+├── ApiResponse.java
+├── CorrelationIdFilter.java
+└── RequestLoggingFilter.java
+
+
+shared/domain/
+├── Money.java
+├── CurrencyCode.java
+├── DateRange.java
+├── TenantId.java
+├── UserId.java
+├── OrganizationId.java
+├── SourceReference.java
+└── VersionedValue.java
+
+
+shared/exception/
+└── all exception classes
+```
+
+
+**Goal:** application starts cleanly, has consistent API errors, IDs, money representation, request correlation and basic enterprise conventions.
+
+---
+
+### 2. Identity + tenant security
+
+Develop:
+
+```text
+identity/model/
+identity/enums/
+identity/repository/
+identity/service/
+identity/security/
+identity/dto/
+identity/controller/
+```
+
+Core functionality:
+
+```text
+User
+Organization
+Membership
+Role
+Permission
+Current user
+Tenant context
+Authentication
+Authorization
+```
+
+**Goal:** every future business operation knows **who** is performing it and **which organization/tenant** they belong to.
+
+---
+
+### 3. Ingestion foundation
+
+Develop:
+
+```text
+ingestion/model/
+ingestion/enums/
+ingestion/dto/
+ingestion/parser/
+ingestion/validator/
+ingestion/security/
+ingestion/service/
+ingestion/repository/
+ingestion/controller/
+```
+
+Build the flow:
+
+```text
+Upload
+ ↓
+File security validation
+ ↓
+File type/content validation
+ ↓
+Checksum
+ ↓
+Create IngestionRun
+ ↓
+Parse CSV/XLSX
+ ↓
+Schema validation
+ ↓
+Data-quality validation
+ ↓
+Processing result
+```
+
+Do not start with AI.
+
+---
+
+### 4. Canonical financial model
+
+Develop:
+
+```text
+financial/model/
+financial/enums/
+financial/repository/
+financial/normalization/
+financial/service/
+financial/mapper/
+financial/dto/
+financial/controller/
+```
+
+Implement:
+
+```text
+Customer
+Product
+Invoice
+InvoiceLine
+FinancialTransaction
+AccountingPeriod
+```
+
+Then create normalization:
+
+```text
+External record
+      ↓
+Normalizer
+      ↓
+Canonical financial object
+```
+
+**Goal:** Tally/Zoho/SAP/QuickBooks/etc. eventually become merely different input adapters producing the same internal model.
+
+---
+
+### 5. Contract/commercial model
+
+Develop:
+
+```text
+contract/model/
+contract/enums/
+contract/repository/
+contract/service/
+contract/extraction/
+contract/dto/
+contract/controller/
+```
+
+Phase 0 should support:
+
+```text
+Contract
+ContractTerm
+PricingTerm
+DiscountTerm
+CommercialRule
+```
+
+Initially, contract terms can be supplied through controlled structured data; document/LLM extraction can come immediately after the deterministic core works.
+
+---
+
+### 6. Financial Truth Engine — highest priority
+
+Now develop:
+
+```text
+financialtruth/model/
+financialtruth/enums/
+financialtruth/rules/
+financialtruth/calculator/
+financialtruth/service/
+financialtruth/repository/
+financialtruth/dto/
+financialtruth/controller/
+```
+
+Core classes:
+
+```text
+FinancialTruthEngine
+ExpectedAmountCalculator
+ActualAmountCalculator
+VarianceCalculator
+ImpactAggregator
+
+FinancialRule
+PricingVarianceRule
+DiscountVarianceRule
+RuleContext
+RuleEvaluationResult
+```
+
+The engine must produce:
+
+```text
+Expected value
+Actual value
+Variance
+Financial impact
+Rule version
+Calculation run
+```
+
+For example:
+
+```text
+Contract price = ₹920
+Invoice price  = ₹1,000
+Quantity       = 10,000
+
+Expected = ₹92,00,000
+Actual   = ₹1,00,00,000
+Variance = ₹8,00,000
+```
+
+Use `BigDecimal`. No AI.
+
+---
+
+### 7. Financial regression suite
+
+Immediately after the engine, develop:
+
+```text
+src/test/java/.../financialtruth/
+
+MoneyTest.java
+PricingVarianceRuleTest.java
+DiscountVarianceRuleTest.java
+FinancialTruthEngineTest.java
+CalculationReproducibilityTest.java
+FinancialRegressionTest.java
+```
+
+Create fixed datasets for:
+
+```text
+Normal pricing
+Discounts
+Zero variance
+Negative variance
+Rounding
+Large amounts
+Multiple invoice lines
+Missing terms
+Boundary dates
+Multiple currencies
+```
+
+This is critical because the **financial calculation is your core product IP**.
+
+---
+
+### 8. Evidence + lineage
+
+Develop:
+
+```text
+evidence/model/
+evidence/enums/
+evidence/repository/
+evidence/service/
+evidence/dto/
+evidence/controller/
+```
+
+Connect:
+
+```text
+Calculation
+ ↓
+Affected transaction
+ ↓
+Canonical record
+ ↓
+Source row
+ ↓
+Source file
+```
+
+Every monetary result must be reconstructable.
+
+---
+
+### 9. Economic Opportunity
+
+Develop:
+
+```text
+opportunity/model/
+opportunity/enums/
+opportunity/repository/
+opportunity/service/
+opportunity/dto/
+opportunity/controller/
+```
+
+Create the central:
+
+```text
+EconomicOpportunity
+```
+
+with:
+
+```text
+ID
+type
+status
+financial impact
+affected transactions
+evidence
+calculation reference
+confidence
+validation status
+owner
+business context
+next action
+timestamps
+lifecycle history
+```
+
+Then connect:
+
+```text
+FinancialTruthEngine
+        ↓
+OpportunityDetectionService
+        ↓
+EconomicOpportunity
+```
+
+---
+
+### 10. Investigation + finance validation
+
+Develop:
+
+```text
+investigation/model/
+investigation/enums/
+investigation/repository/
+investigation/service/
+investigation/dto/
+investigation/controller/
+```
+
+Finance should be able to:
+
+```text
+Open finding
+ ↓
+See calculation
+ ↓
+See evidence
+ ↓
+See affected transactions
+ ↓
+Investigate
+ ↓
+Challenge
+ ↓
+Validate
+       OR
+      Reject
+```
+
+This is where the system becomes a **finance product** rather than just an analytics engine.
+
+---
+
+### 11. Action + outcome/value tracking
+
+Develop:
+
+```text
+outcome/model/
+outcome/enums/
+outcome/repository/
+outcome/service/
+outcome/dto/
+outcome/controller/
+```
+
+Phase 0 only needs the controlled foundation:
+
+```text
+Validated opportunity
+ ↓
+Action recorded
+ ↓
+Action status
+ ↓
+Outcome recorded
+ ↓
+Actual financial value
+ ↓
+Value attribution
+```
+
+This establishes:
+
+```text
+detected
+→ evidenced
+→ quantified
+→ validated
+→ acted
+→ measured
+→ realized
+```
+
+---
+
+### 12. AI layer
+
+Only now develop:
+
+```text
+ai/client/
+ai/service/
+ai/extraction/
+ai/model/
+ai/enums/
+ai/dto/
+ai/controller/
+```
+
+AI capabilities:
+
+```text
+Contract interpretation
+Opportunity explanation
+Business-context summary
+Investigation assistance
+Commercial-term extraction
+```
+
+Architecture:
+
+```text
+Financial Truth
+      ↓
+Economic Opportunity
+      ↓
+AI
+```
+
+Never:
+
+```text
+Raw data
+ ↓
+LLM
+ ↓
+₹ variance
+```
+
+---
+
+### 13. Reporting
+
+Develop last among the core Phase 0 capabilities:
+
+```text
+reporting/model/
+reporting/service/
+reporting/pdf/
+reporting/dto/
+reporting/controller/
+```
+
+Generate:
+
+```text
+Opportunity report
+Calculation
+Evidence
+Affected transactions
+Contract terms
+Validation status
+Action
+Outcome
+```
+
+---
+
+### 14. Processing / async execution
+
+Once the synchronous vertical slice works:
+
+```text
+processing/ingestion/
+processing/financialtruth/
+processing/reporting/
+processing/common/
+```
+
+Move heavy operations to background processing:
+
+```text
+Upload → Job
+Calculation → Job
+Report generation → Job
+Document extraction → Job
+```
+
+This is where your performance architecture becomes real.
+
+---
+
+### 15. Audit + observability
+
+Finish the enterprise operational layer:
+
+```text
+platform/audit/
+platform/observability/
+platform/storage/
+platform/idempotency/
+platform/persistence/
+```
+
+Track:
+
+```text
+Who
+What
+When
+Tenant
+Request ID
+Data source
+Calculation run
+Opportunity
+Validation decision
+Action
+Outcome
+```
+
+---
+
+## The actual development sequence
+
+Don't implement every file in a folder before moving on. Build these **vertical milestones**:
+
+```text
+M1  Application foundation
+ ↓
+M2  Identity + tenant security
+ ↓
+M3  Secure CSV/XLSX ingestion
+ ↓
+M4  Canonical financial model
+ ↓
+M5  Contract/pricing model
+ ↓
+M6  Deterministic Financial Truth Engine
+ ↓
+M7  Financial regression suite
+ ↓
+M8  Evidence + lineage
+ ↓
+M9  Economic Opportunity Record
+ ↓
+M10 Finance investigation + validation
+ ↓
+M11 Action + realized-value tracking
+ ↓
+M12 AI assistance
+ ↓
+M13 Evidence-backed reporting
+ ↓
+M14 Async processing
+ ↓
+M15 Audit + observability + hardening
+```
+
+### The first complete demo you should target
+
+```text
+CSV/XLSX
+   ↓
+Secure ingestion
+   ↓
+Validation
+   ↓
+Canonical invoices
+   +
+Contract pricing
+   ↓
+Financial Truth Engine
+   ↓
+₹8,00,000 exact variance
+   ↓
+Evidence + lineage
+   ↓
+Economic Opportunity
+   ↓
+Finance user reviews
+   ↓
+Validates
+   ↓
+Action recorded
+   ↓
+Actual value recorded
+```
+
+That is the **first real Phase 0 product**. Everything else should be built around making this flow secure, deterministic, auditable, fast, and extensible toward the final Enterprise Financial & Profit Intelligence Infrastructure.

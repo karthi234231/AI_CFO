@@ -2,6 +2,9 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
+	<!-- The Boot parent supplies dependency management for every starter, the
+			compiler defaults for the chosen Java level, surefire and the repackage
+			lifecycle. It is also the single place Boot's own version is pinned. -->
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
@@ -11,6 +14,10 @@
 	<groupId>com.fintech</groupId>
 	<artifactId>cfo</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
+	<!-- The metadata below is intentionally empty. Maven inherits these from the
+			parent POM, and inheriting a licence or an owner from a third party is
+			wrong for this repository, so they are overridden with empty elements
+			rather than left to be inherited. -->
 	<name/>
 	<description/>
 	<url/>
@@ -27,110 +34,351 @@
 		<url/>
 	</scm>
 	<properties>
+		<!-- Language level for every module. 25 is what the code is written against:
+			records, sealed hierarchies with exhaustive switch, ScopedValue and the
+			pattern-matching switch all rely on it. Do not lower it without re-running
+			the whole financialtruth suite. -->
 		<java.version>25</java.version>
+		<!-- Retains parameter names in bytecode. Spring resolves @PathVariable and
+			@RequestParam by parameter name when no explicit name is given, so this
+			keeps controller signatures working without duplicating every name. -->
+		<maven.compiler.parameters>true</maven.compiler.parameters>
+		<!-- MapStruct is not managed by the Spring Boot parent, so it needs an
+			explicit version. 1.6.3 is the current stable release. -->
+		<mapstruct.version>1.6.3</mapstruct.version>
+		<!-- Required since Lombok 1.18.16 so the MapStruct processor can read
+			Lombok-generated accessors regardless of processor ordering. -->
+		<lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
 	</properties>
 	<dependencies>
+		<!-- Health and metrics endpoints. Present so the ingest and calculation
+			schedules can report on themselves without hand-built status code. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
+		<!-- Spring Batch. Phase 0 runs ingestion, truth calculation and report
+			generation as jobs; the starter supplies the job/reader/writer vocabulary
+			and the restartability that a long calculation needs. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-batch</artifactId>
 		</dependency>
+		<!-- Spring Data JPA / Hibernate. The canonical financial, contract and
+			calculation records are tenant-owned rows keyed by organization_id. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>
 		</dependency>
+		<!-- Flyway wired into the Boot datasource auto-configuration. Schema is owned
+			by versioned migrations, never by ddl-auto: the calculation schema is part of
+			the audit trail, not something to be regenerated at boot. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-flyway</artifactId>
 		</dependency>
+		<!-- Spring Security. Supplies the resource-server filter chain that turns a
+			bearer token into an authenticated SecurityPrincipal, which is the only
+			accepted source of tenant scope. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
 		</dependency>
+		<!-- Bean Validation (Jakarta Validation). Every ingest cell and every API
+			body is validated at the edge, so a malformed amount never reaches the
+			financial layer to be coerced. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
+		<!-- Spring MVC on the servlet stack. This is the starter Boot 4 uses for the
+			webmvc flavour, hence webmvc rather than the Boot 3 "web" artifact. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
+		<!-- Flyway's PostgreSQL dialect module. Since Flyway 9 the database support
+			 is a separate artifact, so without this the migrations cannot run. -->
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-database-postgresql</artifactId>
 		</dependency>
+		<!-- OAuth2 resource server. The platform is a downstream API, not an identity
+			provider: it validates a token issued elsewhere and reads the tenant and
+			 roles from it. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+		<!-- OpenAPI/Swagger UI. Pinned explicitly because Spring Boot does not manage it:
+			 Boot 4.x requires springdoc-openapi 3.x, while 2.x is compiled against
+			 Boot 3.x and fails to load against the 4.x classpath. The version is
+			 pinned here rather than left floating so the pin is visible in one place. -->
+		<dependency>
+			<groupId>org.springdoc</groupId>
+			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+			<!-- Spring Boot 4.x requires springdoc-openapi 3.x; 2.x targets Boot 3.x. -->
+			<version>3.1.0</version>
+		</dependency>
+		<!-- Lombok, compile-time only. Generates the accessors and builders used
+			throughout the model layer. The version is inherited from the Boot parent,
+			 which tracks a JDK 25-safe release. -->
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<!-- JSpecify null-safety annotations. Boot 4 treats these as the standard
+			way to declare package-level null guarantees (@NullMarked in
+			package-info.java) and individual @Nullable fields. -->
+		<dependency>
+			<groupId>org.jspecify</groupId>
+			<artifactId>jspecify</artifactId>
+		</dependency>
+		<!-- MapStruct, the compile-time entity/DTO mapper. Chosen over hand-written
+			mappers so that adding a field to an entity without deciding what a DTO
+			should do with it becomes a compile error (see unmappedTargetPolicy below). -->
+		<dependency>
+			<groupId>org.mapstruct</groupId>
+			<artifactId>mapstruct</artifactId>
+			<version>${mapstruct.version}</version>
+		</dependency>
+		<!-- Commons CSV, for the delimited-text ingestion path. Hand-rolling a parser
+			for quoted fields, embedded newlines and alternative delimiters is exactly
+			the kind of quiet data corruption this platform cannot afford. -->
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-csv</artifactId>
+			<version>1.14.1</version>
+		</dependency>
+		<!-- Apache POI, for the XLSX ingestion path. POI also understands the OOXML
+			container, which the archive guard inspects before POI is handed the bytes. -->
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi-ooxml</artifactId>
+			<version>5.4.1</version>
+		</dependency>
+		<!-- OpenPDF, for evidence-backed PDF report generation. Kept separate from POI
+			because writing PDF is a different concern from reading spreadsheets. -->
+		<dependency>
+			<groupId>com.github.librepdf</groupId>
+			<artifactId>openpdf</artifactId>
+			<version>2.0.3</version>
+		</dependency>
 
+		<!-- Live reload and restart during development. Runtime-scoped and optional
+			 so it is absent from the packaged artifact. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-devtools</artifactId>
 			<scope>runtime</scope>
 			<optional>true</optional>
 		</dependency>
+		<!-- The PostgreSQL JDBC driver. Runtime-scoped: the code compiles against
+			 nothing driver-specific, and the driver must not reach a fat jar's
+			 compile classpath. -->
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
+
+		<!-- Boot 4 splits the test starters per module (actuator-test, batch-test,
+			 ...-test) instead of shipping one starter-test. Each entry below is the
+			 test-side counterpart of a starter declared above. -->
+		<!-- Actuator endpoint test support, for the health and metrics surfaces. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Batch job test support: an in-memory and a persistent job repository,
+			 plus the job-launcher test slices used to prove a job is restartable. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-batch-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- JPA test support, chiefly @DataJpaTest. This is the dependency the
+			 Testcontainers-backed tests need to exercise real queries against a real
+			 database rather than an emulated one. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Flyway test support, so migrations can be applied inside a test slice to
+			 prove the schema the entities map to actually exists. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-flyway-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Security test support, chiefly @WithMockUser and the MockMvc request
+			 post-processors needed to drive an authenticated request through a
+			 protected endpoint. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Bean Validation test support, so constraint violations can be asserted
+			 directly rather than inferred from a rendered 400 response. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- MockMvc and JSON path support. This is the dependency the API tests
+			 (the currently-unwritten ones under src/test/java/com/fintech/cfo/api)
+			 will need in order to exercise endpoints and their error shapes. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Spring Boot's Testcontainers integration: the @ServiceConnection bean
+			 in TestcontainersConfiguration hands this a JDBC url with no hardcoded
+			 credentials. -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-testcontainers</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Testcontainers JUnit 5 extension. This is what starts and stops the
+			 container per test class. It needs a running Docker daemon; there is
+			 none in this environment, so container-backed tests cannot be verified here. -->
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>testcontainers-junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- Testcontainers' PostgreSQL module. Supplies the postgres image definition
+			 and the PostgreSQLContainer type the test configuration declares. -->
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- ArchUnit. Enforces the module boundaries from
+			 docs/architecture/module-implementation-rules.md as executable rules, so a
+			 cross-module import fails the build rather than being caught in review. -->
+		<dependency>
+			<groupId>com.tngtech.archunit</groupId>
+			<artifactId>archunit-junit5</artifactId>
+			<version>1.4.1</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
 
 	<build>
 		<plugins>
+			<!-- Annotation processing is configured explicitly because the three
+					processors below must run in a fixed order. Letting the compiler discover
+					them on the classpath makes the order undefined, which is the classic cause
+					of MapStruct emitting mappers that see no Lombok accessors. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<configuration>
+					<!-- Only these processors run, so the annotation processor path is also
+							what defines the order: Lombok first, then the binding shim, then
+							MapStruct. Reordering these three entries breaks DTO mapping. -->
+					<annotationProcessorPaths>
+						<path>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok</artifactId>
+							<!-- Version managed by the Spring Boot parent (JDK 25 safe). -->
+						</path>
+						<!-- The ordering fix. Lombok-mapstruct-binding registers Lombok's
+							 annotations as a MapStruct binding so that, regardless of which
+							 processor javac happens to run first, the MapStruct processor can
+							 see and read the Lombok-generated accessors. Without it the
+							 generated mappers silently treat the properties as absent. -->
+						<path>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok-mapstruct-binding</artifactId>
+							<version>${lombok-mapstruct-binding.version}</version>
+						</path>
+						<!-- Generates the entity/DTO mapper implementations. Must be last: it
+								has to read what the two processors above produced. -->
+						<path>
+							<groupId>org.mapstruct</groupId>
+							<artifactId>mapstruct-processor</artifactId>
+							<version>${mapstruct.version}</version>
+						</path>
+					</annotationProcessorPaths>
+					<compilerArgs>
+						<!-- Generate mappers as Spring beans so they can be injected alongside
+								the rest of the application context rather than instantiated
+								statically in unit tests. -->
+						<arg>-Amapstruct.defaultComponentModel=spring</arg>
+						<!-- Fail the build on an unmapped target property. A silently
+							dropped amount field would corrupt financial reporting. -->
+						<arg>-Amapstruct.unmappedTargetPolicy=ERROR</arg>
+					</compilerArgs>
+				</configuration>
+			</plugin>
+			<!-- Fixes the zone the test JVM reports.
+ 				 The PostgreSQL JDBC driver sends the JVM's default TimeZone ID as a
+ 				 connection startup parameter, and the pgjdbc driver + the server then
+ 				 have to agree on its name. On a machine whose host zone is "India
+ 				 Standard Time" the JDK 25 tz tables resolve that to the *legacy* alias
+ 				 "Asia/Calcutta"; modern PostgreSQL no longer ships that backwards
+ 				 alias, so the server rejects the connection with
+ 				 FATAL: invalid value for parameter "TimeZone": "Asia/Calcutta" and
+ 				 every context-starting test fails at Flyway.
+
+ 				 Fixing it on the JVM rather than in the test or the container:
+ 				   - the container cannot help: withTimezone() sets the *server's*
+ 				     zone, but the fault is in a parameter the *client* sends, so the
+ 				     server would still be handed "Asia/Calcutta";
+ 				   - TimeZone.setDefault() from a JUnit extension or a static
+ 				     initialiser is too late and too fragile, because it only works
+ 				     if nothing has already resolved the default zone, and it leaves
+ 				     mutable global state behind for whichever test runs next;
+ 				   - -Duser.timezone on the command line is applied by the JVM before
+ 				     a single line of test code runs, so it is deterministic by
+ 				     construction.
+
+ 				 UTC is the fixed zone to use: it is a canonical ID both the JDK and
+ 				 every supported PostgreSQL understand, it is the zone pgjdbc
+ 				 special-cases by skipping the TimeZone handshake entirely, and a
+				 fixed test zone is what the determinism rule in
+				 docs/architecture/module-implementation-rules.md §4 (no reliance on
+				 the system clock or zone) asks for. Pinning the Postgres image does
+				 not fix this - both 17 and 18 reject the alias - so the JVM has to
+				 stop sending it.
+
+				 Kept on argLine rather than systemPropertyVariables on purpose:
+				 argLine is a real JVM argument resolved at startup, whereas a system
+				 property is set later by the surefire booter and only takes effect
+				 if no earlier component has already triggered zone resolution. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<!-- Sets the forked test JVM's default zone. Nothing in the test or
+						 production datasource configuration is changed by this: it affects
+						 the build's test JVM only, so a developer's machine still runs
+						 the application in its own zone. -->
+					<argLine>-Duser.timezone=UTC</argLine>
+				</configuration>
+			</plugin>
+			<!-- Builds the executable jar for deployment. -->
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<!-- Lombok is compile-time only. Leaving it in would ship the annotation
+							processor inside the application jar for no runtime benefit. -->
+					<excludes>
+						<exclude>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok</artifactId>
+						</exclude>
+					</excludes>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>

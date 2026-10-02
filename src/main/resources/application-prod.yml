@@ -1,0 +1,53 @@
+# Production overlay on application.yml. Every value that differs from local or dev is declared
+# here explicitly, including the ones that merely repeat the base, so that this file can be read as
+# the authoritative description of how the live system behaves.
+
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  jpa:
+    # Inverse of application-dev.yml. Statement logging is disabled because the SQL text contains
+    # table and column values from tenant financial data, and production logs are retained,
+    # shipped and read by a wider audience than developers.
+    show-sql: false
+    hibernate:
+      # Restated rather than inherited. The base already sets validate and this file exists to be
+      # read during a change review; the repetition is the point, because the one setting that must
+      # never be relaxed in production is the one that would let Hibernate alter a live schema.
+      ddl-auto: validate
+
+server:
+  # Drain in-flight requests before the process exits. Without this a rolling deploy severs
+  # connections mid-request; with it, the container stops accepting new work, finishes what it has,
+  # and only then shuts down.
+  shutdown: graceful
+
+logging:
+  level:
+    # Framework and third-party noise is suppressed at the root. In a production log volume is a
+    # cost and an operational risk: what matters is the application's own lines.
+    root: WARN
+    # Application code stays at INFO - enough to follow a request, not enough to leak request or
+    # response payloads through parameter logging.
+    com.fintech.cfo: INFO
+  pattern:
+    # Overrides the pattern from logback-spring.xml for the console only. The correlation id is
+    # kept because it is what makes a support report actionable, but the tenant id is dropped:
+    # prod logs are shipped to a central collector with wider access than a single tenant's data
+    # warrants. The file appender keeps the full pattern.
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%X{correlationId:-}] %logger{36} - %msg%n"
+
+management:
+  tracing:
+    sampling:
+      # 10% head-based sampling. Enough traces to characterise latency and error rates across a
+      # day, cheap enough to store. Traces from individual financial requests are reconstructed
+      # through audit_events instead, which are never sampled.
+      probability: 0.1
+  endpoint:
+    health:
+      # Repeated from the base on purpose, so the production answer to "who can see which
+      # components are failing" is visible in the file that is reviewed when the deployment is.
+      show-details: never

@@ -1,5 +1,30 @@
 #!/bin/sh
 # ----------------------------------------------------------------------------
+# Maven Wrapper (POSIX / sh) startup script for this project.
+#
+# Why this file exists: it pins the Maven version used to build AI_CFO. Without
+# it every developer and every CI runner would use whatever `mvn` happened to be
+# on PATH, and a different Maven can resolve different plugin versions - so the
+# same commit could build on one machine and fail on another. Use `./mvnw` in
+# place of `mvn` everywhere.
+#
+# The version is not chosen here. It is read from
+# .mvn/wrapper/maven-wrapper.properties:
+#   wrapperVersion      3.3.4  - the version of these wrapper scripts themselves
+#   distributionType    only-script - no maven-wrapper.jar is committed; this
+#                                    script downloads the distribution itself
+#   distributionUrl     Maven 3.9.16, pinned on purpose for the reason above
+#
+# The script below is the stock Apache implementation; it locates JAVA_HOME,
+# downloads the pinned distribution to the local Maven wrapper cache if it is not
+# already there, and then execs it with the arguments passed through unchanged.
+#
+# Environment variables honoured: JAVA_HOME (required), MVNW_REPOURL (mirror base
+# URL), MVNW_USERNAME/MVNW_PASSWORD (authenticated mirrors), MVNW_VERBOSE.
+#
+# Line endings: this file is pinned to LF in .gitattributes. A CRLF here would
+# make the shebang invalid and the script would fail to run on Linux and macOS.
+# ----------------------------------------------------------------------------
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information

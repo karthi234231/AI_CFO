@@ -1,0 +1,39 @@
+# Test overlay on application.yml. The database itself is supplied by the test context (Testcontainers
+# or an external instance); this file governs how the application behaves against it.
+
+spring:
+  config:
+    activate:
+      on-profile: test
+
+  jpa:
+    hibernate:
+      # Validate, never create or drop. The test schema is built by the same Flyway migrations as
+      # production, so a test that passes against a Hibernate-generated schema would prove nothing
+      # about the schema that actually runs.
+      ddl-auto: validate
+
+  flyway:
+    # Flyway refuses `clean` on a production-shaped database by default. Tests need to reset between
+    # runs, so it is re-enabled here and only here: enabling it under any other profile would let a
+    # stray `clean` destroy real data.
+    clean-disabled: false
+
+logging:
+  level:
+    # Third-party noise off so a failing test's output is readable; the application's own INFO lines
+    # are kept, because they are what a failure message points at.
+    root: WARN
+    com.fintech.cfo: INFO
+    # Security at WARN: a test asserting on authentication should not be drowned out by filter chain
+    # chatter, and a test must never print credentials or tokens.
+    org.springframework.security: WARN
+    # Flyway at INFO rather than the default so migration failures - the most common reason a test
+    # context fails to start - are visible in the build output without raising verbosity elsewhere.
+    org.flywaydb: INFO
+
+cfo:
+  application:
+    # Overrides the base default of `local`. The environment is a closed enum consumed in
+    # behaviour-changing places, and a test run must not be mistaken for a developer's machine.
+    environment: test
