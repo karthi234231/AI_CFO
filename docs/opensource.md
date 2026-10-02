@@ -387,7 +387,7 @@ React SPA (Vite)  ──HTTP/JSON──>  Spring MVC  ──>  application servi
 | `ALREADY` + `FIX` | ArchUnit, AssertJ, Testcontainers, springdoc | Apache-2.0 / MIT | All in the POM — but **ArchUnit is on the wrong artifact**. ⚠ **VERIFIED DEFECT 2026-10-03:** `pom.xml` declares `archunit-junit5`, while Spring Boot 4.1.1 manages **JUnit 6** (`junit-jupiter` 6.0.3, `junit-platform-*` 6.0.3). `archunit-junit5` will not execute against Platform 6.x. Replace with **`com.tngtech.archunit:archunit-junit6:1.5.1`** (verified to exist). Note the 1.5.x line is very young — only 1.5.0 and 1.5.1 were ever published — so pin it exactly. |
 | `ADOPT` | Seven ArchUnit rules (no new dependency once the artifact is fixed) | — | (1) `financialtruth` and `contract` must not import `ai` — ADR-002, mechanically enforced. (2) No cross-module import outside `shared`/`platform`. (3) No controller method without an authorization annotation. (4) No repository reachable without a tenant predicate. (5) `platform.web` and `platform.audit` must not depend on any business module. (6) No class outside `shared.domain` may reference `BigDecimal` for a money amount. (7) No reference to `org.piquery` / Liquibase imports — our migrations are Flyway's alone. **All seven are currently unenforced**: `ModuleBoundaryTest` and `DependencyRuleTest` are 32- and 33-line shells with a 3-line class body containing only `// TODO: Add test cases.` The boundary this document keeps asserting is a convention, not a constraint. |
 | `DEFER` | `spring-projects/spring-modulith` | Apache-2.0 | ⚠ **REVISED 2026-10-03.** Previous rationale here — "a stronger ADR-001 check than hand-written ArchUnit" — is **wrong**, and following it would have wasted days. Running `ApplicationModules.verify()` alongside a hand-rolled ArchUnit suite makes Modulith fail *against* the existing rules; the two must not coexist. Pick one. **Decision: ArchUnit, because we already depend on it and need to fix the artifact anyway.** Revisit Modulith if we want transactional event-publication registry, which is genuinely valuable for ADR-004's lineage requirement — but never alongside the rules above. |
-| `DEFER` | `javers/javers` | Apache-2.0 | Envers already covers contract history. Javers earns its place only when we need *diff* queries across aggregates. |
+| `DEFER` | `javers/javers` | Apache-2.0 | ⚠ Rationale corrected: this row previously said "Envers already covers contract history", which stopped being true when Envers moved to `DEFER` (§35.1 row 3) — we currently have **no** entity history at all, and neither library changes that, because both can only record what is already a mapped entity. Javers earns its place only for *diff* queries across aggregates, which is a Phase 2 question. Until 42/42 tables are mapped, the honest answer is that history is a §28 `recorded_at` column, not a library. |
 | `DEFER` | `rest-assured` | Apache-2.0 | Boot 4's `spring-boot-starter-webmvc-test` is already in the POM and covers API testing. |
 | `DEFER` | `jqwik` | EPL-2.0 | Property tests proving rounding antisymmetry are the highest-value test we could write, but EPL needs legal sign-off. |
 | `DEFER` | `AxonFramework`, `kafka`, `debezium/debezium` | Apache-2.0 | Event sourcing and CDC are Phase 2+ at earliest. **Link corrected:** the old file pointed at an org redirect rather than at the project. |
@@ -400,22 +400,69 @@ React SPA (Vite)  ──HTTP/JSON──>  Spring MVC  ──>  application servi
 Ordered by dependency, not by enthusiasm. Effort is a rough engineer-day estimate for one
 developer already familiar with this codebase.
 
+```mermaid
+flowchart TD
+    subgraph W0["Week 0 — unblock everything else"]
+        C1[CI: verify + SCA + SBOM]
+        C2[FIX archunit-junit6]
+        C3[FIX prometheus registry]
+    end
+    subgraph W1["Week 1-2 — the security chain, in order"]
+        A1["Spring Security<br/>JWT"] --> A2["⚠ decoder hardening<br/>alg/iss/aud pinned"]
+        A2 --> A3[Keycloak issuer]
+        A2 --> A4["Tenant isolation<br/>@TenantId + per-repo tests"]
+        A3 --> A4
+        A4 --> A5[3-layer log redaction]
+    end
+    subgraph W2["Week 2-3 — make the data real"]
+        B1[Testcontainers<br/>no H2] --> B2["42/42 tables mapped"]
+        B2 --> B3[jOOQ audit reads]
+        B2 -.blocked.-> B4["Envers<br/>DEFER until mapped"]
+    end
+    subgraph W3["Week 3+ — surface, then throughput"]
+        D1[SPA foundation] --> D2[Reporting UI]
+        E1[Ingest + truth] --> E2[AI extraction ⚠ advisory]
+        E2 --> D2
+        F1[Object storage] --> E1
+        G1[Observability] --> E1
+    end
+    C1 --> A1
+    C2 --> A4
+    C3 --> G1
+    A5 --> B1
+    B3 --> E1
+```
+
+**The graph is the argument.** Three edges carry the whole plan:
+
+- **`A2 → A4` — the decoder must be pinned before tenancy.** A forgeable token makes every
+  tenant predicate irrelevant (§36.4). Doing tenancy first and auth later means re-testing it.
+- **`B1 → B2` — Testcontainers before entities.** "42/42 tables mapped" is unverifiable on H2,
+  and the first real Postgres run will surface the `jsonb`/constraint assumptions in §3.
+- **`B2 ⇢ B4` — Envers is dotted, not solid.** It is `DEFER`red until the entity coverage exists
+  to audit (§35.1 row 3). Drawing it as a normal dependency would imply it is merely later.
+
 | # | workstream | first choice | effort | exit criterion — "done" means |
 |---|---|---|---|---|
-| 0 | **CI/CD** | GitHub Actions + `mvn verify` + Trivy + Dependency-Check | 1 | Every PR builds and tests; a known CVE fails the build |
-| 1 | **Identity & tenancy** | Spring Security + Keycloak + `@TenantId` + 3 ArchUnit rules | 5 | A JWT from Keycloak reaches an endpoint; a request without `organization_id` is rejected by the database, not by luck |
-| 2 | **Persistence** | Entities from the 10 migrations; jOOQ reads; Envers on contracts | 8 | 30/30 repositories real; 42/42 tables mapped; every query tenant-scoped |
+| 0a | **Fix the build** | `archunit-junit6:1.5.1`; add `micrometer-registry-prometheus` **unversioned** | 0.5 | The seven §11 rules actually execute; `/actuator/prometheus` returns metrics. Both are live defects (§35.2), not improvements. |
+| 0b | **CI/CD** | GitHub Actions + `mvn verify` + Dependency-Check + Trivy + osv-scanner + CycloneDX/SPDX + cosign | 1 | Every PR builds and tests; CVSS ≥ 7 or a KEV fails the build; SBOM is an artefact of the release |
+| 1a | **Identity** | Spring Security RS + Keycloak + **pinned `JwtDecoder`** (§36.4) | 3 | Valid JWT reaches an endpoint carrying `organization_id`; `alg: none`, HS256-with-the-public-key, wrong-`aud` and expired are all rejected |
+| 1b | **Tenancy** | `@TenantId` + `findByIdAndTenantId` + one cross-tenant test per repository | 4 | A request without `organization_id` is rejected **by the database**, not by luck. **Starts only after 1a** — see the graph. |
+| 2 | **Persistence** | Entities for the 10 migrations; jOOQ for audit reads. ⚠ **Envers `DEFER`** — not in this phase | 8 | 30/30 repositories real; 42/42 tables mapped; every query tenant-scoped |
 | 3 | **Test depth** | Testcontainers Postgres in CI — no H2 anywhere | 2 | `mvn verify` runs the full suite against real Postgres |
-| 4 | **Frontend foundation** | React 19 + Vite + TanStack Query/Table + keycloak-js | 4 | SPA builds in CI, authenticates via Keycloak, renders one real table from the API |
-| 5 | **Batch & scheduling** | Spring Batch jobs + `@Scheduled` | 4 | Nightly ingest → truth → report runs unattended, idempotent on re-run |
-| 6 | **AI extraction** | Spring AI + Tika `tika-core`/PDFBox, with redaction and human approval | 6 | Terms extracted, stored with model and prompt hash, reviewable, never in the math |
+| 4 | **Frontend foundation** | React 19 + Vite + TanStack Query/Table + shadcn/Radix/Tailwind + keycloak-js | 4 | SPA builds in CI, authenticates via Keycloak, renders one real table from the API |
+| 5 | **Batch & scheduling** | Spring Batch 6 + **external trigger** (⚠ **not** `@Scheduled`, not Quartz — §35.1 row 2) | 4 | Nightly ingest → truth → report runs unattended, and is idempotent on re-run |
+| 6 | **AI extraction** | Spring AI `2.0.1` + Tika `tika-core`/PDFBox, with redaction and human approval | 6 | Terms extracted, stored with model and prompt hash, reviewable, **never in the math** |
 | 7 | **Reporting** | OpenPDF + POI (already in the POM) | 3 | A finding exports to PDF and XLSX with full evidence lineage and an "AI-extracted, unverified" marker |
 | 8 | **Reporting UI** | Opportunity + evidence screens | 5 | Finance can review, approve/reject and download a finding without leaving the browser |
-| 9 | **Object storage** | AWS SDK v2 against any S3-compatible store | 2 | Original upload and evidence artifact stored immutably with a content hash |
+| 9 | **Object storage** | AWS SDK v2 against any S3-compatible store; **server-generated keys only** (§36.2) | 2 | Original upload and evidence artifact stored immutably with a content hash |
 | 10 | **Observability** | Micrometer → Prometheus → Grafana | 2 | Dashboards for ingest health, job failures, detection counts |
 
-**Total ≈ 42 engineer-days.** Items 0–3 are the true blockers; item 4 is the largest new
-surface; everything after 4 is throughput.
+**Total ≈ 46.5 engineer-days** (was ≈ 42 before §36 added the two build fixes, the decoder
+hardening and the S3 key work). **Rows 0a–3 are the true blockers; row 4 is the largest new surface;
+everything after 4 is throughput.** Note that 0a is half a day and it is the highest
+value-per-hour line in this table: without it, the §11 guardrails do not run and the §20 alerts
+do not fire, so every other row is being built on unverified ground.
 
 ---
 
@@ -618,17 +665,21 @@ edge, encryption, secrets, and provable supply chain.
 | verdict | control / project | licence | decision |
 |---|---|---|---|
 | `REJECT` | ~~`hashicorp/vault`~~ | ⚠ **BUSL-1.1 — not open source** | ⚠ **FACT CORRECTED 2026-10-03.** Vault is licensor **IBM Corp**, Change License MPL-2.0 after four years, and its Additional Use Grant forbids production use where the licensed work is offered hosted or embedded in competition with IBM's paid version. That clause is exactly the one that bites when selling to enterprises. **Decided: SOPS + age, or OpenBao if a runtime store is genuinely required.** |
-| `ADOPT` | `getsops/sops` + `FiloSottile/age` | MPL-2.0 / MIT+BSD ⚠ | Ciphertext committed, plaintext only on a workstation holding the age identity. The only approach that works when deployment lands **inside the customer's own VPC**, because it adds no service to license, secure and operate in someone else's environment — and the ciphertext is diffable in git, so you can prove what changed and when. The baseline for a project this size. |
+| `ADOPT` | `getsops/sops` + `FiloSottile/age` | MPL-2.0 ⚠ (SOPS) / MIT+BSD ⚠ (age) | Ciphertext committed, plaintext only on a workstation holding the age identity. The only approach that works when deployment lands **inside the customer's own VPC**, because it adds no service to license, secure and operate in someone else's environment — and the ciphertext is diffable in git, so you can prove what changed and when. The baseline for a project this size. |
 | `DEFER` | `openbao/openbao` | MPL-2.0 ⚠ | The licence-clean answer to Vault if a runtime store is needed. Same operational footprint as Vault, so the licence reason is the load-bearing one, not the footprint. Adopt only for dynamic short-lived DB credentials, PKI issuance, KMS transit, or a hard customer requirement naming a "vault-compatible" API. |
 | `REJECT` | ~~MD5 and SHA-1 anywhere~~ | — | Both rejected for every integrity path. MD5 chosen-prefix collisions are trivial and it still appears in default configs, so scanning for it finds real forgotten defaults; SHA-1 is broken (SHAttered 2017, chosen-prefix 2020). **A collision in a dedupe path silently treats one supplier's document as another's.** `SHA-256` is the floor — and note it is the wrong primitive for *passwords* (speed is the property you do not want there; use Argon2id/bcrypt). |
-| `ADOPT` | `sigstore/cosign` **keyless, on the digest** | Apache-2.0 | ⚠ Sign `$IMAGE@sha256:…`, never `$IMAGE:1.4.2`. A tag can be re-pointed, so a tag signature proves *an* image was signed, not *which bits* — and "show me the running artefact is the reviewed artefact" is a question that appears in essentially every enterprise security questionnaire. ⚠ Verify against the Rekor transparency log; cosign has accepted signatures with expired intermediates when Rekor verification is skipped. |
-| `ADOPT` | CycloneDX **and** SPDX Maven plugins | Apache-2.0 | Emit **both** from the same resolved graph: CycloneDX is the format engineers name, SPDX tag-value is what legal and procurement checklists ask for. Same job as `package`, bound to the same commit. Assert the SBOM component count equals the resolved dependency count — otherwise you have scanned a different graph than the one that ships. |
+| `ADOPT` | `sigstore/cosign` **keyless, on the digest** | Apache-2.0 | ⚠ Sign `$IMAGE@sha256:…`, never `$IMAGE:1.4.2`. A tag can be re-pointed, so a tag signature proves *an* image was signed, not *which bits* — and "show me the running artefact is the reviewed artefact" is a question that appears in essentially every enterprise security questionnaire. ⚠ Verify against the Rekor transparency log: **GO-2026-4529** records cosign accepting signatures with expired intermediates when Rekor verification is skipped. ⚠ Version below is from a second-hand tracker; `sigstore/cosign` shows `v2.6.5` in the Go module index with a v3 major only partially confirmed — **pin `sigstore/cosign-installer` (`v4.1.2`) to a commit SHA and do not trust a floating tag.** |
+| `ADOPT` | CycloneDX **and** SPDX Maven plugins ⚠ version | Apache-2.0 | Emit **both** from the same resolved graph: CycloneDX is the format engineers name, SPDX tag-value is what legal and procurement checklists ask for. Same job as `package`, bound to the same commit. Assert the SBOM component count equals the resolved dependency count — otherwise you have scanned a different graph than the one that ships. |
+| `ADOPT` | **OWASP Dependency-Check `org.owasp:dependency-check-maven:13.0.0`** ✅ 2026-08-03 | Apache-2.0 | The SCA scanner with real Java/JAR **bytecode reachability**, and the artefact an auditor names. Runs offline against a mirrored NVD feed. Gate CVSS ≥ 7, ratcheting down from 9. Suppressions in a frozen `dependency-check-suppressions.xml`, each with a date and an approver. |
+| `ADOPT` | **Trivy `v0.74.0`** ✅ 2026-08-14 | Apache-2.0 | One binary replaces three: filesystem scan, SBOM, secrets, IaC, plus `trivy fs --scanners license` for the licence gate. ⚠ `GO-2026-4919` records a brief compromise of the aquasecurity/trivy ecosystem — an argument for **pinning by digest**, not for skipping the tool. |
+| `ADOPT` | **osv-scanner `v2.5.1`** ✅ 2026-08-17 | Apache-2.0 | Google's OSV has the most accurate JVM/Maven feed, is free and keyless, and reads `pom.xml` directly. Second opinion alongside Dependency-Check — one feed has blind spots, and a KEV-flagged CVE should fail at *any* severity. |
+| `DEFER` | Grype | Apache-2.0 | Strong container scanner with EPSS/KEV, but subsumed for a Maven fat JAR by Trivy + osv-scanner, and its container-native matching is weaker than bytecode reachability. Revisit for distroless/K8s. |
 | `ALIGN` | **India DPDP Act 2023**; **GDPR** if EU | — | Invoice data contains counterparty contacts (names, emails, GSTIN). Classify it as personal data, minimise it, and record a lawful basis. Data-residency intent belongs in the deployment ADR, not in code. |
 | `ALIGN` | **SOC 2 / ISO 27001-ready controls** | — | We already have the hard part: append-only `audit_events` (`V10`, no FKs, no UPDATE/DELETE grant), correlation IDs, structured logging with money redaction. Add: documented access reviews, change log, backup/restore drill. |
 | `ADOPT` | **TLS everywhere**; **Postgres encryption at rest** (disk/KMS) | — | Non-negotiable for a pilot. Column-level encryption only for PII specifically; do **not** encrypt money columns (it breaks aggregation and index use). |
 | `ADOPT` | Secrets via **env / SOPS+age** or **AWS Secrets Manager**; `openbao/openbao` (MPL-2.0) if a Vault is wanted | MPL-2.0 | `ApplicationProperties` already states secrets are excluded from config and must come from a secret manager. Keep that contract: the app reads secrets from the environment, never from YAML. **Do not adopt HashiCorp Vault** — BUSL-1.1 since 2023 (§19). |
-| `ADOPT` | **CycloneDX** Maven plugin (SBOM) | Apache-2.0 | One attachment per release. Cheapest credible answer to "show me your bill of materials". SPDX is an equivalent alternative. |
-| `ADOPT` | `dependency-check/Dependency-Check` (SCA) + `aquasecurity/trivy` (image/secret scan) | Apache-2.0 | Fail the build on a known CVE. Trivy also scans the image and flags committed secrets. |
+| `ADOPT` | **CycloneDX** + **SPDX** Maven plugins ⚠ version | Apache-2.0 | One attachment per release, emitted from the same resolved graph. Cheapest credible answer to "show me your bill of materials". |
+| `ADOPT` | `dependency-check-maven` **13.0.0** ✅ + `aquasecurity/trivy` **v0.74.0** ✅ + `google/osv-scanner` **v2.5.1** ✅ | Apache-2.0 | Fail the build on a known CVE. Dependency-Check has Java bytecode reachability; Trivy also scans the image, secrets and licences; osv-scanner is a second opinion on the best JVM feed. **Licence gate: AGPL-3.0 is disqualifying** for a closed-source hosted JAR, EPL-2.0 is the preferred copyleft, and `trivy --scanners license` must **fail closed on UNKNOWN**. |
 | `ADOPT` | `sigstore/cosign` + **SLSA** provenance | Apache-2.0 | Sign the built image and attach provenance. Trigger for full SLSA-3: an enterprise security review. |
 | `DEFER` | `semgrep/semgrep` (SAST), `SonarSource/sonarqube` | LGPL / LGPL-3.0 | Useful, but ArchUnit + rules already cover the highest-value Java assertions. Trigger: >5 developers or an external pen-test finding. |
 | `DEFER` | **WAF / API gateway**, mTLS between services | — | Single deployable in Phase 0 — there is no east-west traffic to secure yet. |
@@ -686,6 +737,7 @@ way back out. **Effort is engineer-days; risk is the chance the estimate is wron
 | # | ADOPT (§) | coordinates | wiring point | config / data | proof of done | rollback | effort / risk |
 |---|---|---|---|---|---|---|---|
 | 1 | Spring Security RS (§2) | `spring-boot-starter-oauth2-resource-server` (in POM) | new `identity/security/SecurityConfig`, `JwtAuthenticationConverter` | `cfo.security.issuer-uri`, `audience`, `clock-skew` (already in `application.yml`) | a request with no/invalid JWT is 401; a valid one carries `organization_id` | remove the `SecurityFilterChain` bean — endpoints open, so this is *remove-and-revert*, not a soft rollback | 3 / low |
+| 1b | **JWT decoder hardening** (§36.4) ⚠ CRITICAL | same starter, `NimbusJwtDecoder` | `SecurityConfig.jwtDecoder()` | allowed algorithms pinned to RS256/ES256; `iss` + `aud` validators; 30 s skew | `alg: none`, HS256-with-the-public-key, wrong-`aud` and expired tokens are all rejected | widen the validator set back to defaults | 1.5 / **low effort, critical if missed** — must land with or before row 1, since a forgeable token makes row 3's tenant isolation irrelevant |
 | 2 | Keycloak (§2) | `quay.io/keycloak/keycloak` container | dev/staging `docker-compose`; realm import JSON in repo | realm per tenant; client `cfo-api`; audience claim mapped to `organization_id` | login in dev, token accepted by 1 | stop the container; fall back to a test issuer | 2 / med — ops weight, not code |
 | 3 | Hibernate `@TenantId` (§2) | Hibernate 6+ (on classpath) | every `@Entity`; `CurrentTenantIdentifierResolver` | `organization_id` becomes a framework-managed discriminator | a query with no tenant filter returns 0 rows, not everyone's | remove the annotation; **re-audit every query** (this is the expensive direction — decide once) | 2 / low |
 | 4 | jOOQ (§3) | `org.jooq:jooq` + codegen from the Flyway schema | `financialtruth/repository` reads; report projections | jOOQ codegen against a Testcontainers Postgres in the build | generated SQL is committed and diffable; an audit query's SQL appears in version control | delete the generated sources; JPA remains for writes | 4 / med — codegen in a Boot 4/Java 25 build needs pinning |
@@ -696,7 +748,7 @@ way back out. **Effort is engineer-days; risk is the chance the estimate is wron
 | 9 | promptfoo (§17) | `npm i -D promptfoo` (dev only, not shipped) | CI step over a committed eval set | eval fixtures: contract snippets + expected terms | CI fails when the model invents a number or a citation is missing | remove the CI step | 2 / low |
 | 10 | PIT (§21) | `org.pitest:pitest-maven` | build plugin, `financialtruth` + `contract` targets | mutation threshold gate | ≥ 80 % mutation score on the money path | remove the plugin | 2 / low |
 | 11 | WireMock (§21) | `org.wiremock:wiremock-standalone` (test scope) | `ai/` tests | stubbed provider responses | `ai/` tests run offline | remove | 1 / low |
-| 12 | CycloneDX + Dependency-Check + cosign (§18) | Maven plugins + `sigstore/cosign` in CI | build pipeline | SBOM + signed image artefact | SBOM attached; image verifies; a known CVE fails the build | remove the CI steps | 2 / low |
+| 12 | CycloneDX + SPDX + Dependency-Check **13.0.0** + Trivy **v0.74.0** + osv-scanner **v2.5.1** + cosign (§18) | Maven plugins + `sigstore/cosign-installer` **v4.1.2** pinned to a commit SHA | build pipeline | SBOM + signed image artefact; frozen suppression file | SBOM attached and component count matches; image verifies by digest; CVSS ≥ 7 or KEV fails the build; UNKNOWN licence fails | remove the CI steps | 2.5 / low — ⚠ all three SCA versions ✅ dated; cosign's own version is only ⚠ and the ecosystem has a recent compromise (**GO-2026-4919**), so the *action* is pinned by digest |
 | 13 | Metabase (§10) | `metabase/metabase` container, **customer-deployed** | read-only DB role over reporting views | reporting views only; never the app schema directly | a finance user builds a chart without a code change | stop the container | 1 / low |
 
 **Why the rollback column matters more than the effort column:** decisions 1–3 and the
@@ -1012,17 +1064,22 @@ silently alter a figure's presentation. This is the report-layer equivalent of `
 
 ## 35. Corrections log — what this document got wrong, and how we know
 
-Added **2026-10-03**. Every row below is a decision that was **verified against a primary source
-in this session and found wrong**, or a defect found in the tree. Nothing here is a preference.
-Each reversed row is marked in place with a ⚠ pointer so a reader arriving at the original
-section still learns it was wrong.
+Added **2026-10-03**, and extended the same day. Every row below is either a decision **verified
+against a primary source in this session and found wrong**, a claim that was true in spirit but
+wrong in detail, or a defect found in the tree. Nothing here is a preference. Reversed rows are
+marked in place with a ⚠ pointer so a reader arriving at the original section still learns it was
+wrong.
 
 **Why this section exists.** A decision document that is never wrong is a decision document nobody
-checked. These five reversals and two build defects came out of one verification pass, which means
-the previous revision was **not** verified when it was written. Treat every un-reversed row as
-"believed true at the time of writing", not as "confirmed".
+checked. These **ten corrections** — seven reversed decisions and three precision fixes — plus **two
+live build defects** and one self-defeating rationale came out of two verification passes, which
+means the previous revision was **not** verified when it was written. Treat every un-reversed row
+as "believed true at the time of writing", not as "confirmed".
 
-### 35.1 Reversed decisions
+### 35.1 Reversed decisions and precision corrections
+
+Rows 1–7 are **reversals**: the document said the opposite. Rows 8–10 are **precision fixes and
+omissions**: the direction was right, the detail or the coverage was not.
 
 | # | was | now | evidence | could we have caught it locally? |
 |---|---|---|---|---|
@@ -1033,11 +1090,15 @@ the previous revision was **not** verified when it was written. Treat every un-r
 | 5 | `ADOPT` PDFBox "for layout-aware table extraction", `ADOPT` Tika (§8) | **`ADOPT` PDFBox for text/offsets only**; **Tika narrowed to `tika-core`** | **PDFBox has no table finder** — it provides text, regions and coordinates; region clustering is ours to write. Tika's standard parser package pulls a large transitive parser surface into a finance service and forks work into a separate process on the 4.x line; each extra parser is extra attack surface for hostile input. | No. |
 | 6 | `ADOPT` LangChain4j, `DEFER` Spring AI (§9, §17) | **`ADOPT` Spring AI**, `DEFER` LangChain4j | The stated reason — "we need typed extraction, not chat, and its structured-output support is stronger and more stable" — was **asserted, never checked**. Verified: `langchain4j-spring-boot4-starter:1.21.0-beta31` *does* exist but is a **beta** whose POM declares `spring-boot-starter:4.0.5`, not 4.1.x. Spring AI `2.0.x` is **GA on Boot 4.0/4.1** (`2.0.1` stable) and ships `StructuredOutputValidationAdvisor`, which self-corrects on validation failure — the ADR-002 enforcement point, as framework behaviour rather than our code. The old decision would have put a beta Spring integration in the one module where a silent failure corrupts extracted terms. | No. Provider breadth was a red herring: `LlmPort` is our interface either way. |
 | 7 | `DEFER` shadcn/MUI/AntD together (§10) | **`ADOPT` shadcn + Radix + Tailwind**; **`REJECT` MUI/AntD/Mantine** | The old row conflated a **component framework** (ships a whole visual system, ~300 kB, a design vocabulary we would argue about) with **unstyled accessible primitives we own as source**. shadcn is the latter — no runtime component dependency, a11y already solved, styled by Tailwind `4.3.3`. It is exactly the "hand-built components on plain CSS or Tailwind" the old text asked for. | No. |
+| 8 | *(not previously stated)* age assumed to share SOPS' MPL-2.0 | **`ADOPT` with correct licences: SOPS MPL-2.0 ⚠, age MIT+BSD ⚠** | Age is a separate project under the FSF's age licence, not MPL. Copyleft provenance was asserted from adjacency rather than from the licence file. | **Yes** — one `LICENSE` read. |
+| 9 | *(not previously stated)* CERT-In 6-hour rule stated as confirmed fact | **`⚠` marked unconfirmed, while still driving the design** | The figure is reported by secondary sources and was not confirmed against the rules. The 6-hour number also has a **2-claim conflict in the source research** on the S3 key regex's length bound, so the same pass is not uniformly reliable. Mitigation: build the runbook to 6 h anyway, because designing to 72 h and discovering 6 h during an incident is the failure this section exists to prevent. | No — and this is exactly why the row exists. |
+| 10 | *(omitted)* JWT decoder hardening | **`ADOPT`, and ranked ahead of tenant isolation** | With no `JwtDecoder` yet, `alg: none` and RS256→HS256 confusion remain available, and `aud` is unvalidated. **Authentication precedes authorisation**: a forgeable token makes every tenant predicate irrelevant, so §36.1's 4 engineer-days buy nothing if this is left to a rushed implementation. 1.5 days. | **Partly** — the negatives (`alg: none`, HS256) are local tests. Writing the decoder *unsafely* is not. |
 
-### 35.2 Build defects found in the tree
+### 35.2 Build defects and one self-defeating rationale found in the tree
 
-Both verified by reading `pom.xml` and `application.yml` directly. **These are live bugs, not
-documentation errors** — the second one means every alert in §20 is currently dead.
+Verified by reading `pom.xml`, `application.yml` and §11 directly. **Rows 1–2 are live bugs, not
+documentation errors** — the second one means every alert in §20 is currently dead. Row 3 is a
+documentation defect that would have produced a broken build if followed.
 
 | # | defect | evidence | consequence | fix |
 |---|---|---|---|---|
@@ -1068,18 +1129,24 @@ moment of adoption, not a re-read of this file.
 | Deliverables | No Dockerfile, no compose file, no Kubernetes manifests, no IaC, no `.github/` directory exist. Everything in §23 and §25 is a plan, not a shipped thing. |
 | Observability | No registry is wired (defect 2), so no SLI in §20 has ever been measured. The thresholds are reasoned guesses. |
 | Tenancy | `@TenantId` is `ADOPT` and unimplemented. With 2 of 42 tables mapped and zero repositories real, "tenant isolation" is currently a naming convention. |
+| Authentication | No `JwtDecoder` exists, so **there is nothing yet to audit** — but also nothing preventing `alg: none` and RS256→HS256 confusion when one is written (§36.4). Treat the decoder as a security control to design, not boilerplate to copy. |
 | Performance | Every number in §19 and §25 is an assumption. No 200 k-row file has been run. |
 | Frontend | The entire SPA is unbuilt. §10 is a decision, not a description. |
 | Deprecations | Upstream status claims rot in months. The `archived on 5 Jul 2026` and `FSL from 5.0.0` facts are true as of 2026-10-03 and are precisely the kind of fact that goes stale silently. |
 
 ---
 
-## 36. The three findings that outrank every dependency decision in this document
+## 36. The findings that outrank every dependency decision in this document
 
 Added **2026-10-03**. These are not library choices. Each is a defect in the current tree or a gap
 in the current plan that a dependency would not fix, and each is rated above the entire
 dependency list in expected loss. They are recorded here so that "add jOOQ" never outranks
-"one tenant can read another's invoices".
+"one tenant can read another's invoices" — and so that a JWT decoder written in a hurry never
+outranks either.
+
+**Read in this order, not in this document order:** 36.4 (forgeable token) → 36.1 (cross-tenant
+read) → 36.2 (attacker-controlled storage key) → 36.3 (breach clock) → 36.5. The first two are a
+single attack chain, and 36.5 is the cheap pair that no scanner reports.
 
 ### 36.1 ⚠ CRITICAL — tenant isolation is unenforced, and a Hibernate filter would not reach it
 
@@ -1137,13 +1204,15 @@ decision that is currently *undermined by how the key is built*. A key of the fo
 then **asserted** that the normalised result still starts with the tenant prefix. Two tests:
 uploading `../../etc/passwd` and `a/../../b.pdf`, both asserted 400. **1.5 engineer-days.**
 
-### 36.3 ⚠ CRITICAL — the DPDP breach clock is 6 hours, not 72
+### 36.3 ⚠ CRITICAL — the breach clock may be 6 hours, not 72
 
 **The finding.** §18 and §17 both reference DPDP's 72-hour Board-notification window, and that
 number is right. It is also **not the binding one**. CERT-In's regime under the IT Rules 2021
-Rule 70B requires reporting a cyber incident to CERT-In **within 6 hours**, to a different
-recipient, on a different trigger. Running both means **the 6-hour clock binds operationally** and
-the 72-hour clock is the outer bound, not the deadline.
+Rule 70B ⚠ is reported to require reporting a cyber incident to CERT-In **within 6 hours**, to a
+different recipient, on a different trigger. ⚠ **That 6-hour figure is not yet confirmed against the
+rules themselves — verify it with Indian counsel before designing to it.** If it is correct,
+running both regimes means the 6-hour clock binds operationally and the 72-hour clock is the outer
+bound, not the deadline.
 
 That matters because the 6-hour clock starts at *awareness*, and our awareness path does not exist
 yet: there is no detection signal, no triage path, no immutable "when did we become aware"
@@ -1153,9 +1222,11 @@ An unqueried trail is precisely why that timestamp arrives late.
 **Decided:**
 
 1. Write the runbook **before** the first incident: detection source → severity triage →
-   immutable awareness timestamp → CERT-In at ≤ 6 h → Data Principals without delay → Board at
-   ≤ 72 h → evidence pack. Rehearse it by tabletop against a synthetic breach. A runbook written
-   after the first breach is a post-mortem, not a control.
+   immutable awareness timestamp → **CERT-In at ≤ 6 h ⚠** → Data Principals without delay →
+   Board at ≤ 72 h → evidence pack. Rehearse it by tabletop against a synthetic breach. A runbook
+   written after the first breach is a post-mortem, not a control. **Build the pipeline to the
+   6-hour target even while the figure is unconfirmed** — designing to 72 h and discovering the
+   6-hour rule during an incident is the failure mode this section exists to prevent.
 2. Daily job alerting on actor ids absent from the Keycloak realm, and on event-count anomalies.
 3. `V11`: `NOT NULL` + check constraints on `audit_events.tenant_id`/`actor_id`. The table has **no
    FKs** by design, which means nothing currently forces them to be populated — a row attributable
@@ -1172,7 +1243,31 @@ details to last-4, drop GSTIN unless the extraction needs it, register the provi
 sub-processor, and confirm Rule 14's operative text with Indian counsel rather than inferring it
 from secondary sources. **3 engineer-days.**
 
-### 36.4 The two `⚠ Review` items a scanner will not find
+### 36.4 ⚠ CRITICAL — the JWT decoder algorithm and audience are unpinned
+
+**The finding.** §2 records "no `SecurityFilterChain`, no `JwtDecoder`" as the identity blocker. It
+does not say that **until a `JwtDecoder` exists, every way of writing a wrong one is still open**,
+and the two classic ways are silent:
+
+- **`alg: none`** and **RS256 → HS256 confusion** both pass a naive decoder. The second is the
+  nastier: the RSA **public** key is public, so a decoder that trusts `alg` will happily use it as
+  an HMAC secret and verify *any* attacker-signed token. A decoder that picks its verifier from
+  the token header, or resolves `kid` against a token-influenced JWKS endpoint, enables both.
+- **No `aud` validation** is the quieter failure: any token issued by *any* client in the realm for
+  *any* audience is accepted. Our SPA is one client, but the realm will host others.
+- **No clock-skew tolerance** turns 30 seconds of drift into an unexplained outage.
+
+**Decided:** pin RS256/ES256, validate `iss` **and** `aud`, never select the verifier from the
+token, and add negative tests for `alg: none`, HS256-signed-with-the-public-key, wrong-audience and
+expired. **1.5 engineer-days.**
+
+**This is ranked here rather than in §36.1 for a specific reason: §36.1's tenant work is worthless
+without it.** Tenant isolation protects the rows a request *reaches*; if the token can be forged,
+an attacker never needs to bypass the tenant predicate — they simply present a token for a
+different tenant and the predicate resolves to the attacker's own id. Authentication precedes
+authorisation. Fix this **before** §36.1, not after.
+
+### 36.5 The two `⚠ Review` items a scanner will not find
 
 These are the traps that survive every tool in §18 because no tool reasons about our invariants:
 
