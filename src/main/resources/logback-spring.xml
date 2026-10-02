@@ -1,5 +1,135 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    CFO logging configuration placeholder.
-    TODO: Add the actual Logback configuration.
+	Logback configuration. Loaded as logback-spring.xml rather than logback.xml so that the
+	<springProfile> element and Spring Boot's own defaults are available: this file can therefore
+	take part in Spring's configuration lifecycle instead of being evaluated before the context
+	exists.
+
+	Two concerns drive every decision here. First, what is logged: a financial system's logs are a
+	data-exfiltration path, so the level and pattern are set to make accidental payload logging
+	unlikely rather than to make debugging convenient. Second, where it goes: the root appender is
+	attached to both console and file, so a container deployment and a local run capture identical
+	records without a second configuration file.
 -->
+<configuration>
+
+	<!--
+		Default level for the application's own logger. Overridable by the LOG_LEVEL environment
+		variable so an operator can raise verbosity for one instance without a rebuild, but defaulted
+		to INFO because DEBUG in a financial system is where parameter-level logging tends to appear.
+	-->
+	<property name="LOG_LEVEL" value="${LOG_LEVEL:-INFO}"/>
+
+	<!--
+		One pattern shared by both appenders so a line read from the console and a line read from the
+		archive are byte-identical and can be correlated with each other.
+
+		Each field earns its place:
+		  %d{...XXX}  ISO-8601 with an explicit offset. A timestamp without a zone is
+		               ambiguous, and these logs are read across regions and compared against
+		               database rows stored in UTC.
+		  %-5level    Left-padded so levels align in a column and can be grepped by eye.
+		  correlationId  Populated from the MDC by CorrelationIdFilter, so every line belonging to
+		               one request can be extracted. The default is an explicit placeholder rather
+		               than empty, so an untraced line is visibly untraced instead of merely short.
+		  tenantId    The same idea for the tenant boundary: a bug that crosses tenants shows up as
+		               two different values on lines that should have shared a request. Absent from the
+		               prod console pattern - see application-prod.yml - because prod logs are
+		               shipped to a collector with broader access.
+		  %logger{40} Abbreviated and length-capped so the message column starts in roughly the
+		               same place; 40 characters is enough for the full package path of this codebase.
+		%msg%n is used rather than %m%n deliberately: the exception stack trace must follow the
+		message rather than being treated as an extra parameter that %m would swallow.
+	-->
+	<property name="LOG_PATTERN"
+			  value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%X{correlationId:-no-correlation-id}] [%X{tenantId:-no-tenant}] %logger{40} - %msg%n"/>
+
+	<!--
+		Console appender. Writes to stdout so the platform owns collection: Docker and Kubernetes
+		ship it, systemd journals it, and no log path is configured inside the application. It is
+		attached to the root logger and not given its own threshold, because a second filter would
+		create a rule that a reader has to check - namely, which lines exist in the console but not
+		in the file.
+	-->
+	<appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+		<encoder>
+			<pattern>${LOG_PATTERN}</pattern>
+		</encoder>
+	</appender>
+
+	<!--
+		Rolling file appender. The file exists so a long-running instance retains history even if
+		the platform's log pipeline is lossy, and so support can be handed a bounded bundle.
+
+		Path comes from CFO_LOG_DIR with a relative default, so the application never assumes an
+		absolute log location and can run read-only in an environment where only ./logs is writable.
+	-->
+	<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+		<file>${CFO_LOG_DIR:-./logs}/cfo.log</file>
+		<!--
+			SizeAndTimeBasedRollingPolicy, because the two axes are independent: a day boundary is
+			meaningless in a system with no daily volume, and a size boundary is meaningless in a
+			burst. The %i index makes a size-triggered rollover possible within a single day.
+
+			50MB per file keeps one archive readable without an external tool.
+			30 days of history matches the shortest retention this system's audit questions ask
+			for; longer retention belongs to audit_events, which is a database table and is not
+			approached by deleting log files.
+			totalSizeCap is the one that matters operationally: maxHistory alone permits unbounded
+			disk growth when many large files accumulate per day, and a logging failure takes down
+			the application, so the 2GB ceiling is a deliberate guard on a shared filesystem.
+		-->
+		<rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+			<fileNamePattern>${CFO_LOG_DIR:-./logs}/archive/cfo.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+			<maxFileSize>50MB</maxFileSize>
+			<maxHistory>30</maxHistory>
+			<totalSizeCap>2GB</totalSizeCap>
+		</rollingPolicy>
+		<!--
+			Same pattern as the console on purpose. A file appender is where support actually reads
+			from, and reformatting on the way to disk would make a log line quoted in a ticket
+			unreproducible against the archive.
+		-->
+		<encoder>
+			<pattern>${LOG_PATTERN}</pattern>
+		</encoder>
+	</appender>
+
+	<!--
+		Never log request/response bodies, authorization headers, cookies,
+		uploaded file contents, contract text or customer financial payloads.
+	-->
+
+	<!--
+		Explicit per-logger levels. Each exists to hold down a logger that is both chatty and
+		sensitive, rather than to raise one:
+		  org.springframework.web  - request mapping and header logging at DEBUG includes
+		    client-supplied header values; INFO keeps the access trail without them.
+		  org.springframework.security - DEBUG dumps the filter chain and, in some configurations,
+		    token contents. INFO preserves the authentication decisions an investigation needs.
+		  org.hibernate.SQL - the single highest-risk logger in this application. Its output is
+		    verbatim SQL including bound parameter values, which is customer financial data. It is
+		    pinned at WARN here even though the base level is lower, so that no environment
+		    variable can turn it on. Turning SQL logging on in dev is done in application-dev.yml,
+		    where the log is not retained.
+		  com.fintech.cfo - the application's own logger, the only one whose level is tunable,
+		    since application developers are the people who need it and the only ones who know
+		    which class to point it at.
+	-->
+	<logger name="org.springframework.web" level="INFO"/>
+	<logger name="org.springframework.security" level="INFO"/>
+	<logger name="org.hibernate.SQL" level="WARN"/>
+	<logger name="com.fintech.cfo" level="${LOG_LEVEL}"/>
+
+	<!--
+		Root at WARN. Anything not named above is framework or third-party code, and in production
+		the volume of it is a cost with no investigative value. Both appenders are attached here so
+		console and file always agree: a level rule that applied to only one sink would produce
+		evidence that exists on a disk an operator cannot find.
+	-->
+	<root level="WARN">
+		<appender-ref ref="CONSOLE"/>
+		<appender-ref ref="FILE"/>
+	</root>
+
+</configuration>

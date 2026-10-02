@@ -1,2 +1,10 @@
+# Line-ending normalisation for the build tooling. Without this the same script
+# checks out with different bytes per platform, and a shell script that acquires
+# CRLF fails on Linux/macOS.
+
+# The POSIX wrapper script must stay LF: a CRLF in mvnw makes the shebang invalid.
 /mvnw text eol=lf
+
+# Windows batch scripts must stay CRLF, because cmd.exe misparses LF-only .cmd
+# files in some edge cases.
 *.cmd text eol=crlf

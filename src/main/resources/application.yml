@@ -1,0 +1,224 @@
+# Base configuration for every profile. Profile-specific files (application-dev.yml,
+# application-prod.yml, application-test.yml) overlay this file rather than replacing it, so
+# anything a profile does not mention keeps the value declared here. Keeping the base runnable on
+# its own means a developer's local run and a CI smoke test both start without picking a profile.
+#
+# Nothing in this file carries a secret. Every sensitive value is read from an environment variable
+# with an empty or local-only default, so a committed file can never leak a credential and a
+# misconfigured deployment fails loudly rather than booting against a developer's database.
+
+spring:
+  # Spring's own application name, used for the default logback context, actuator's info endpoint
+  # and JMX/logging prefixes. Distinct from cfo.application.name below, which is the product name
+  # surfaced to users; keeping them separate means the technical identifier does not change when
+  # the product is rebranded.
+  application:
+    name: cfo
+
+  # --- Datasource ---------------------------------------------------------------------------
+  # The database is the system of record; every other store is a cache of it. Connection details
+  # are injected so the same artifact runs against a developer's laptop and a managed instance.
+  datasource:
+    url: ${CFO_DB_URL:jdbc:postgresql://localhost:5432/cfo}
+    username: ${CFO_DB_USERNAME:cfo}
+    # Empty default on purpose: an unset password is a visible failure to authenticate rather than a
+    # silent connection to an unintended database. Secrets belong in the environment, not in here.
+    password: ${CFO_DB_PASSWORD:}
+    hikari:
+      # Sized for a modest single-instance deployment: virtual threads make thread-per-request
+      # cheap, so the pool is now the real concurrency limit and is tuned deliberately rather than
+      # left at a default that would be correct only for blocking I/O on platform threads.
+      maximum-pool-size: 20
+      # Keeping a small warm floor avoids a connection storm on the first burst of traffic after a
+      # deploy or a scale event, when every thread would otherwise pay full TCP plus TLS setup.
+      minimum-idle: 5
+      # Fail fast rather than hang: a request that cannot obtain a connection within 30s should
+      # surface as an error the caller can retry, not as a thread parked indefinitely.
+      connection-timeout: 30000
+
+  # --- JPA / Hibernate ----------------------------------------------------------------------
+  jpa:
+    # Open Session in View is disabled deliberately. It would keep a persistence context open for
+    # the whole HTTP response, silently re-enabling lazy loading in the view layer, holding a
+    # database connection across rendering, and turning a missing join fetch into a production N+1
+    # rather than a compile-time complaint. Repositories fetch what the response needs.
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate is only allowed to check that the mapping and the
+      # migration history agree; it may never create, alter or drop a column in any environment.
+      # A drift between the two must fail the boot, not be silently repaired.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          # Timestamps are stored and read in UTC. Without this the JVM default zone decides how a
+          # TIMESTAMPTZ is interpreted, and the same stored value would mean different instants on
+          # different machines. Per-tenant display zones live on organizations.timezone.
+          time_zone: UTC
+        # Fetches collections in batches of 50 instead of one row per element. This is the single
+        # highest-leverage setting for the N+1 patterns that lazy associations invite, and it is
+        # applied globally so no repository can forget it.
+        default_batch_fetch_size: 50
+
+  # --- Flyway -------------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    # Permits adopting a pre-existing database whose history predates this repository rather than
+    # refusing to start. Safe because the migrations are the only schema writer: Hibernate is in
+    # validate mode, so an adopted schema is checked rather than extended behind our back.
+    baseline-on-migrate: true
+    # Explicit location so the migration set cannot be shadowed by an unexpected directory on the
+    # classpath; the same path is referenced by every profile.
+    locations: classpath:db/migration
+
+  # --- Servlet multipart ---------------------------------------------------------------------
+  servlet:
+    multipart:
+      enabled: true
+      # Ingestion accepts spreadsheet exports, which are legitimately large. 25MB is generous for
+      # a business export but still bounded; the ingestion module enforces the same ceiling at
+      # cfo.ingestion.max-file-size-bytes so the limit holds even when a request bypasses the
+      # container's check.
+      max-file-size: 25MB
+      # Slightly above the file limit to leave room for multipart headers and form fields. It is
+      # deliberately not equal: a request whose body is exactly at the file limit is legitimate
+      # and must not be rejected because of its envelope.
+      max-request-size: 30MB
+
+  # --- Virtual threads -----------------------------------------------------------------------
+  threads:
+    virtual:
+      # Enabled because the workload is dominated by JDBC and object-storage waits. Virtual threads
+      # are cheap to park, so throughput is bounded by the connection pool and the downstream
+      # services rather than by an OS thread count. Note that pinning is avoided everywhere it can
+      # be, and that any synchronized block on a hot path would defeat this.
+      enabled: true
+
+server:
+  port: ${CFO_SERVER_PORT:8080}
+
+  # --- Error responses -----------------------------------------------------------------------
+  error:
+    # include-message/stacktrace/binding-errors are all suppressed. This service handles financial
+    # data; an exception message can carry column names, file paths or another tenant's identifier,
+    # and a binding error echoes the rejected payload back to the caller. Errors are logged
+    # server-side with full detail and answered with an opaque correlation id instead.
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+management:
+  # --- Actuator -------------------------------------------------------------------------------
+  endpoints:
+    web:
+      exposure:
+        # Explicit allowlist rather than "*". Health, info and metrics are read-only and needed by
+        # probes and dashboards; prometheus is the scrape endpoint. Everything else, including env,
+        # beans, configprops and loggers, stays unexposed because those endpoints disclose
+        # configuration and topology to anyone who can reach the port.
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # Liveness and readiness probes on the dedicated /actuator/health/liveness and /readiness
+      # paths, so a Kubernetes probe does not restart a pod that is merely waiting for a
+      # dependency, and does not route traffic to one that has not finished starting.
+      probes:
+        enabled: true
+      # Never disclose component detail. A "DOWN" with named failing components tells an attacker
+      # which dependencies exist; the same information is available to operators through the
+      # internal metrics endpoint and the logs.
+      show-details: never
+  observations:
+    # Low-cardinality dimensions attached to every span and metric, so traces can be filtered by
+    # deployment without recording anything tenant-identifying.
+    key-values:
+      application: ${cfo.application.name:AI_CFO}
+      environment: ${cfo.application.environment:local}
+
+# --- Application-owned configuration ---------------------------------------------------------
+# Bound by platform.config.ApplicationProperties and its siblings through
+# @ConfigurationProperties. Services never read these keys directly; the platform exposes them as
+# immutable typed records so a configuration change cannot ripple into a business module and a
+# half-applied value can never be observed.
+cfo:
+  application:
+    # Product name, distinct from spring.application.name. Version is surfaced in health output
+    # and OpenAPI so a support ticket can be tied to a specific build.
+    name: AI_CFO
+    version: 0.0.1
+    # Closed enum (local/dev/test/staging/prod) rather than a free string, so the places where the
+    # environment changes behaviour are decided by an exhaustive check rather than string equality.
+    environment: ${CFO_ENVIRONMENT:local}
+    # Echo X-Correlation-ID on the response so a caller who reported a problem can quote the id and
+    # have every log line and audit row for that request retrieved in one query.
+    correlation-id-response-header: true
+
+  # --- Security -------------------------------------------------------------------------------
+  security:
+    # Empty default: with no issuer configured the resource server has nothing to validate against
+    # and startup fails, which is the correct outcome. It is far better than falling back to a
+    # permissive default that would silently accept unauthenticated traffic.
+    issuer-uri: ${CFO_OIDC_ISSUER_URI:}
+    audience: ${CFO_OIDC_AUDIENCE:cfo-api}
+    # Tokens are accepted 60s either side of expiry to absorb clock drift between the issuer and
+    # this node. Deliberately short: a long window widens the replay opportunity for a stolen token.
+    clock-skew: 60s
+
+  # --- Ingestion -----------------------------------------------------------------------------
+  ingestion:
+    # 25MB, matching spring.servlet.multipart.max-file-size. Duplicated as an explicit application
+    # limit rather than read from the servlet key so the business rule survives a container change
+    # and can be asserted in a test without a running servlet context.
+    max-file-size-bytes: 26214400
+    # Caps the work one upload can enqueue, bounding both memory and the duration of a single batch
+    # job. A file beyond this is rejected at validation rather than failing halfway through.
+    max-rows-per-file: 200000
+    # Allowlist of MIME types. Only formats the parser actually implements are listed, so an
+    # executable or an unexpected container is refused on content type before any parsing begins.
+    allowed-content-types:
+      - text/csv
+      - application/vnd.ms-excel
+      - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+  # --- Storage -------------------------------------------------------------------------------
+  storage:
+    # Filesystem-backed object storage root for uploaded sources, contracts and generated reports.
+    # Records persist the storage_key rather than an absolute path, so this can be repointed at a
+    # different volume or an external store without touching any row.
+    root: ${CFO_STORAGE_ROOT:./var/storage}
+
+  # --- Async ---------------------------------------------------------------------------------
+  async:
+    # Deliberately a bounded platform-thread pool, not virtual threads: these tasks saturate on the
+    # connection pool and on CPU-bound calculation work, where unbounded concurrency would queue
+    # thousands of tasks and lose the backpressure that bounds them.
+    core-pool-size: 8
+    max-pool-size: 32
+    # A bounded queue is the backpressure: once it is full, submitting work is rejected fast so the
+    # caller learns the system is overloaded instead of waiting behind an unbounded backlog.
+    queue-capacity: 500
+
+  # --- Idempotency ---------------------------------------------------------------------------
+  idempotency:
+    # Matches the 24h expiry window of idempotency_records. Long enough to cover any client retry
+    # cycle including an overnight one, short enough that the table stays small enough to sweep.
+    ttl: PT24H
+
+  # --- AI ------------------------------------------------------------------------------------
+  ai:
+    # Off by default in every profile including prod. The AI module interprets and explains; it
+    # must never be a precondition for producing a number, so the system is fully functional and
+    # deterministic without it. Enabling it is an explicit deployment decision.
+    enabled: false
+    model: ${CFO_AI_MODEL:}
+    base-url: ${CFO_AI_BASE_URL:}
+    # At most two retries. Generation failures are usually not transient, and unbounded retries on
+    # a synchronous request path would convert a fast failure into a slow one.
+    max-retries: 2
+    timeout: 60s
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

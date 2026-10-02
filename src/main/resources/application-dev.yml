@@ -1,0 +1,40 @@
+# Shared development environment. Overlaid on application.yml, never used standalone: everything
+# this file omits - datasource, Flyway, actuator exposure, storage root, AI limits - is inherited
+# from the base. The file therefore contains only what must differ during development, which keeps
+# the diff between a developer's runtime and production's runtime small enough to read.
+
+spring:
+  # Self-declaring profile activation, so this file is inert unless the dev profile is active.
+  # The same pattern is used by application-prod.yml and application-test.yml.
+  config:
+    activate:
+      on-profile: dev
+
+  jpa:
+    # Log every statement. Noisy by design: in development the SQL is how you find a missing join
+    # fetch or a wrong tenant predicate. application-prod.yml turns this off because an SQL log in
+    # a financial system is a data-exfiltration path.
+    show-sql: true
+    properties:
+      hibernate:
+        # Pretty-print the statements that show-sql emits, because a single unreadable line of SQL
+        # is close to useless when debugging a filter.
+        format_sql: true
+
+logging:
+  level:
+    # Application code at DEBUG so module internals are visible without a debugger. Paired with the
+    # root level, which is left at the framework default: this environment trades third-party noise
+    # for application detail rather than silencing everything else.
+    com.fintech.cfo: DEBUG
+    # Spring Security at INFO. Its DEBUG output includes filter chains and header contents, which
+    # is valuable in development and unacceptable anywhere the logs are retained.
+    org.springframework.security: INFO
+
+management:
+  tracing:
+    sampling:
+      # Every request is traced in development. 1.0 is unaffordable in a shared environment, so
+      # application-prod.yml samples at 0.1; the base file sets no default, leaving the choice to
+      # the profile that has the environment in front of it.
+      probability: 1.0

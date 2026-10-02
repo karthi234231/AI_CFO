@@ -1,5 +1,27 @@
 <# : batch portion
 @REM ----------------------------------------------------------------------------
+@REM Maven Wrapper (Windows) startup script for this project.
+@REM
+@REM Why this file exists: it pins the Maven version used to build AI_CFO, so a
+@REM developer on Windows gets the same build as everyone else and as CI. Use
+@REM `mvnw` in place of `mvn`.
+@REM
+@REM The version is not chosen here; it is read from
+@REM .mvn\wrapper\maven-wrapper.properties:
+@REM   wrapperVersion      3.3.4 - the version of these wrapper scripts themselves
+@REM   distributionType    only-script - no maven-wrapper.jar is committed
+@REM   distributionUrl     Maven 3.9.16, pinned on purpose
+@REM
+@REM Below is the stock Apache implementation. It locates JAVA_HOME, downloads the
+@REM pinned distribution to the local wrapper cache if needed, and execs it with
+@REM the arguments passed through unchanged.
+@REM
+@REM Environment variables honoured: JAVA_HOME (required), MVNW_REPOURL,
+@REM MVNW_USERNAME/MVNW_PASSWORD, MVNW_VERBOSE.
+@REM
+@REM Line endings: this file is pinned to CRLF in .gitattributes, which is what
+@REM cmd.exe expects for a .cmd file.
+@REM ----------------------------------------------------------------------------
 @REM Licensed to the Apache Software Foundation (ASF) under one
 @REM or more contributor license agreements.  See the NOTICE file
 @REM distributed with this work for additional information
