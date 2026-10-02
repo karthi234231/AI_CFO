@@ -6,6 +6,10 @@ HELP.md
 # from the sources.
 target/
 
+# Application log output. Runtime state, not source; the durable record of what
+# happened is the audit table, not a file on a developer's disk.
+logs/
+
 # With distributionType=only-script the wrapper needs no jar; this rule is the
 # guard against one being added by accident.
 .mvn/wrapper/maven-wrapper.jar
